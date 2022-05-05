@@ -45,6 +45,7 @@ import faulthandler; faulthandler.enable()
 import obspy
 import logging
 from obspy.signal.trigger import trigger_onset
+from obspy.clients.filesystem.sds import Client
 from .EqT_utils import f1, SeqSelfAttention, FeedForward, LayerNormalization
 warnings.filterwarnings("ignore")
 from tensorflow.python.util import deprecation
@@ -1141,10 +1142,12 @@ def _plotter_prediction(data, args, save_figs, yh1, yh2, yh3, evi, matches):
             plt.legend(custom_lines, ['E', 'Picked P', 'Picked S'], fancybox=True, shadow=True)
             plt.axis('off')
         
-        ax = fig.add_subplot(spec5[1, 0])         
+        ax = fig.add_subplot(spec5[1, 0]) 
         f, t, Pxx = signal.stft(data[:, 0], fs=100, nperseg=80)
-        Pxx = np.abs(Pxx)                       
-        plt.pcolormesh(t, f, Pxx, alpha=None, cmap='hot', shading='flat', antialiased=True)
+        #Pxx = np.abs(Pxx) 
+        #print(f.shape,t.shape,Pxx.shape,data.shape)                     
+        plt.pcolormesh(t, f, np.abs(Pxx), alpha=None, cmap='hot',  antialiased=True) #shading='flat',
+        #plt.pcolormesh(t, f, np.abs(Pxx), vmin=0, vmax=amp, shading='gouraud')
         plt.ylim(0, 40)
         plt.text(1, 1, 'STFT', fontdict=font0)
         plt.ylabel('Hz', fontsize=12)
@@ -1181,8 +1184,8 @@ def _plotter_prediction(data, args, save_figs, yh1, yh2, yh3, evi, matches):
     
         ax = fig.add_subplot(spec5[3, 0]) 
         f, t, Pxx = signal.stft(data[:, 1], fs=100, nperseg=80)
-        Pxx = np.abs(Pxx)                       
-        plt.pcolormesh(t, f, Pxx, alpha=None, cmap='hot', shading='flat', antialiased=True)
+        #Pxx = np.abs(Pxx)                       
+        plt.pcolormesh(t, f, np.abs(Pxx), alpha=None, cmap='hot', antialiased=True) #shading='flat', 
         plt.ylim(0, 40)
         plt.text(1, 1, 'STFT', fontdict=font0)
         plt.ylabel('Hz', fontsize=12)
@@ -1219,8 +1222,8 @@ def _plotter_prediction(data, args, save_figs, yh1, yh2, yh3, evi, matches):
     
         ax = fig.add_subplot(spec5[5, 0])         
         f, t, Pxx = signal.stft(data[:, 2], fs=100, nperseg=80)
-        Pxx = np.abs(Pxx)                       
-        plt.pcolormesh(t, f, Pxx, alpha=None, cmap='hot', shading='flat', antialiased=True)
+        #Pxx = np.abs(Pxx)                       
+        plt.pcolormesh(t, f, np.abs(Pxx), alpha=None, cmap='hot', antialiased=True) #shading='flat', 
         plt.ylim(0, 40)
         plt.text(1, 1, 'STFT', fontdict=font0)
         plt.ylabel('Hz', fontsize=12)
@@ -1415,3 +1418,399 @@ def _plotter_prediction(data, args, save_figs, yh1, yh2, yh3, evi, matches):
         plt.clf()
         
         
+def sds_predictor(tbeg,tend,sds_dir='.',
+              input_model="sampleData&Model/EqT1D8pre_048.h5",
+              stations_json= "station_list.json",
+              output_dir="detections",
+              detection_threshold=0.3,                
+              P_threshold=0.1,
+              S_threshold=0.1, 
+              number_of_plots=10,
+              plot_mode='time',
+              loss_weights=[0.03, 0.40, 0.58],
+              loss_types=['binary_crossentropy', 'binary_crossentropy', 'binary_crossentropy'],
+              normalization_mode='std',
+              batch_size=500,              
+              overlap = 0.3,
+              gpuid=None,
+              gpu_limit=None,
+              overwrite=False,
+              output_probabilities=False): 
+    
+    """ 
+    
+    To perform fast detection directly on mseed data on SDS structure.
+    
+    Parameters
+    ----------
+    sds_dir: str
+        Directory of SDS. YYYY/NET/STA/...
+            
+    input_model: str
+        Path to a trained model.
+            
+    stations_json: str
+        Path to a JSON file containing station information. 
+           
+    output_dir: str
+        Output directory that will be generated.
+            
+    detection_threshold: float, default=0.3
+        A value in which the detection probabilities above it will be considered as an event.
+            
+    P_threshold: float, default=0.1
+        A value which the P probabilities above it will be considered as P arrival.                
+            
+    S_threshold: float, default=0.1
+        A value which the S probabilities above it will be considered as S arrival.
+            
+    number_of_plots: float, default=10
+        The number of plots for detected events outputed for each station data.
+            
+    plot_mode: str, default=time
+        The type of plots: time only time series or time_frequency time and spectrograms.
+            
+    loss_weights: list, default=[0.03, 0.40, 0.58]
+        Loss weights for detection P picking and S picking respectively.
+            
+    loss_types: list, default=['binary_crossentropy', 'binary_crossentropy', 'binary_crossentropy']
+        Loss types for detection P picking and S picking respectively.
+             
+    normalization_mode: str, default=std
+        Mode of normalization for data preprocessing max maximum amplitude among three components std standard deviation.
+             
+    batch_size: int, default=500
+        Batch size. This wont affect the speed much but can affect the performance. A value beteen 200 to 1000 is recommanded.
+             
+    overlap: float, default=0.3
+        If set the detection and picking are performed in overlapping windows.
+             
+    gpuid: int
+        Id of GPU used for the prediction. If using CPU set to None.        
+             
+    gpu_limit: int
+       Set the maximum percentage of memory usage for the GPU. 
+
+    overwrite: Boolean, default=False
+        Overwrite your results automatically.
+
+    output_probabilities: Boolean, default=False
+        Write probability in output_dir/prob.h5 for future plotting
+        Structure: prediction_probabilities.hdf5{begintime: {Earthquake: probability, P_arrival: probability, S_arrival: probability}}
+        Notice: It you turn this parameter on, it will generate larges file (A test shows ~150 Mb file generated for a three-components station for 3 months)
+
+    Returns
+    --------        
+    output_dir/STATION_OUTPUT/X_prediction_results.csv: A table containing all the detection, and picking results. Duplicated events are already removed.
+    output_dir/STATION_OUTPUT/X_report.txt: A summary of the parameters used for prediction and performance.
+    output_dir/STATION_OUTPUT/figures: A folder containing plots detected events and picked arrival times.
+    time_tracks.pkl: A file containing the time track of the continous data and its type. 
+    
+    Note
+    --------        
+    This does not allow uncertainty estimation or writing the probabilities out.
+    
+    
+    """  
+        
+ 
+    args = {
+    "input_dir": sds_dir,
+    "input_model": input_model,
+    "stations_json": stations_json,
+    "output_dir": output_dir,
+    "detection_threshold": detection_threshold,
+    "P_threshold": P_threshold,
+    "S_threshold": S_threshold,
+    "number_of_plots": number_of_plots,
+    "plot_mode": plot_mode,
+    "loss_weights": loss_weights,     
+    "loss_types": loss_types,
+    "normalization_mode": normalization_mode,
+    "overlap": overlap,
+    "batch_size": batch_size,    
+    "gpuid": gpuid,
+    "gpu_limit": gpu_limit,
+    "output_probabilities": output_probabilities
+    }        
+        
+    if args['gpuid']:     
+        os.environ['CUDA_VISIBLE_DEVICES'] = '{}'.format(args['gpuid'])
+        tf.Session(config=tf.ConfigProto(log_device_placement=True))
+        config = tf.ConfigProto()
+        config.gpu_options.allow_growth = True
+        config.gpu_options.per_process_gpu_memory_fraction = float(args['gpu_limit']) 
+        K.tensorflow_backend.set_session(tf.Session(config=config))          
+
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s',
+                        datefmt='%m-%d %H:%M') 
+
+    class DummyFile(object):
+        file = None
+        def __init__(self, file):
+            self.file = file
+    
+        def write(self, x):
+            # Avoid print() second call (useless \n)
+            if len(x.rstrip()) > 0:
+                tqdm.write(x, file=self.file)
+    
+    @contextlib.contextmanager
+    def nostdout():
+        save_stdout = sys.stdout
+        sys.stdout = DummyFile(sys.stdout)
+        yield
+        sys.stdout = save_stdout
+    
+    eqt_logger = logging.getLogger("EQTransformer")
+    eqt_logger.info(f"Running EqTransformer  {EQT_VERSION}")
+            
+    eqt_logger.info(f"*** Loading the model ...")
+    model = load_model(args['input_model'], 
+                       custom_objects={'SeqSelfAttention': SeqSelfAttention, 
+                                       'FeedForward': FeedForward,
+                                       'LayerNormalization': LayerNormalization, 
+                                       'f1': f1                                                                            
+                                        })              
+    model.compile(loss = args['loss_types'],
+                  loss_weights = args['loss_weights'],           
+                  optimizer = Adam(lr = 0.001),
+                  metrics = [f1])
+    eqt_logger.info(f"*** Loading is complete!")
+
+    out_dir = os.path.join(os.getcwd(), str(args['output_dir']))
+    if os.path.isdir(out_dir):
+        eqt_logger.info(f"*** {out_dir} already exists!")
+        eqt_logger.info(f"Overwriting your previous results")
+    else:
+        os.makedirs(out_dir) 
+        eqt_logger.info(f"Made output to {out_dir}")
+
+    data_track = dict()
+    sdsclent = Client(args['input_dir'])
+        
+    json_file = open(args['stations_json'])
+    stajsons = json.load(json_file)
+
+    # detecting day by day
+    t = tbeg
+    while t < tend:
+        t1 = t
+        t2 = t + 86460  # more 60 seconds ahead 
+        for sta in stajsons:
+            year = t.year
+            jday = t.julday
+            stajson= stajsons[sta]
+
+            start_Predicting = time.time()       
+            time_slots, comp_types = [], []
+            toGo,meta, time_slots, comp_types, data_set = _sdsmseed2nparry(args, sdsclent,sta,stajson,t1,t2, time_slots, comp_types)
+            if toGo == 0:
+                continue
+
+            save_dir = os.path.join(out_dir, str(year),stajson['network'],sta) #str(st)+'_outputs')
+            #if not os.path.isdir(save_dir):
+            try:
+                #shutil.rmtree(save_dir)  
+                os.makedirs(save_dir,exist_ok=True) 
+
+                if args['number_of_plots']:
+                    save_figs = os.path.join(save_dir, 'figures') 
+                    os.makedirs(save_figs,exist_ok=True)
+
+                if args['output_probabilities']:
+                    out_probs = os.path.join(save_dir, '{:04d}.{:03d}.prediction_probabilities.hdf5'.format(year,jday))           
+                    try:
+                        os.remove(out_probs)
+                    except Exception:
+                        pass                 
+                    HDF_PROB = h5py.File(out_probs, 'a')
+            except Exception:
+                eqt_logger.error('Make output directories or file error!')
+            plt_n = 0            
+            csvPr_gen = open(os.path.join(save_dir,'{:04d}.{:03d}.X_prediction_results.csv'.format(year,jday)), 'w')          
+            predict_writer = csv.writer(csvPr_gen, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+            predict_writer.writerow(['file_name', 
+                                    'network',
+                                    'station',
+                                    'instrument_type',
+                                    'station_lat',
+                                    'station_lon',
+                                    'station_elv',
+                                    'event_start_time',
+                                    'event_end_time',
+                                    'detection_probability',
+                                    'detection_uncertainty', 
+                                    'p_arrival_time',
+                                    'p_probability',
+                                    'p_uncertainty',
+                                    'p_snr',
+                                    's_arrival_time',
+                                    's_probability',
+                                    's_uncertainty',
+                                    's_snr'
+                                        ])  
+            csvPr_gen.flush()
+            #eqt_logger.info(f"Started working on {st}, {ct+1} out of {len(station_list)} ...")       
+
+            params_pred = {'batch_size': args['batch_size'],
+                        'norm_mode': args['normalization_mode']}  
+                
+            pred_generator = PreLoadGeneratorTest(meta["trace_start_time"], data_set, **params_pred)
+
+            predD, predP, predS = model.predict_generator(pred_generator)
+
+            detection_memory = []
+            for ix in range(len(predD)):
+                matches, pick_errors, yh3 =  _picker(args, predD[ix][:, 0], predP[ix][:, 0], predS[ix][:, 0])        
+                if (len(matches) >= 1) and ((matches[list(matches)[0]][3] or matches[list(matches)[0]][6])):
+                    snr = [_get_snr(data_set[meta["trace_start_time"][ix]], matches[list(matches)[0]][3], window = 100), _get_snr(data_set[meta["trace_start_time"][ix]], matches[list(matches)[0]][6], window = 100)]
+                    pre_write = len(detection_memory)
+                    detection_memory=_output_writter_prediction(meta, predict_writer, csvPr_gen, matches, snr, detection_memory, ix)
+                    post_write = len(detection_memory)
+
+                    if args['output_probabilities']:
+                        HDF_PROB.create_dataset(f'{meta["trace_start_time"][ix]}/Earthquake', data=predD[ix][:, 0], dtype= np.float32) 
+                        HDF_PROB.create_dataset(f'{meta["trace_start_time"][ix]}/P_arrival', data=predP[ix][:, 0], dtype= np.float32) 
+                        HDF_PROB.create_dataset(f'{meta["trace_start_time"][ix]}/S_arrival', data=predS[ix][:, 0], dtype= np.float32) 
+                        HDF_PROB.flush()
+                    
+                    if plt_n < args['number_of_plots'] and post_write > pre_write:
+                        _plotter_prediction(data_set[meta["trace_start_time"][ix]], args, save_figs, predD[ix][:, 0], predP[ix][:, 0], predS[ix][:, 0], meta["trace_start_time"][ix], matches)
+                        plt_n += 1            
+                                                        
+            end_Predicting = time.time() 
+            data_track[sta]=[time_slots, comp_types] 
+            delta = (end_Predicting - start_Predicting) 
+            hour = int(delta / 3600)
+            delta -= hour * 3600
+            minute = int(delta / 60)
+            delta -= minute * 60
+            seconds = delta
+            
+            if args['output_probabilities']:
+                HDF_PROB.close()
+            """              
+            dd = pd.read_csv(os.path.join(save_dir,'X_prediction_results.csv'))
+            print(f'\n', flush=True)
+            eqt_logger.info(f"Finished the prediction in: {hour} hours and {minute} minutes and {round(seconds, 2)} seconds.")
+            eqt_logger.info(f'*** Detected: '+str(len(dd))+' events.')
+            eqt_logger.info(f' *** Wrote the results into --> " ' + str(save_dir)+' "')
+            
+            # print(' *** Finished the prediction in: {} hours and {} minutes and {} seconds.'.format(hour, minute, round(seconds, 2)), flush=True)         
+            # print(' *** Detected: '+str(len(dd))+' events.', flush=True)
+            # print(' *** Wrote the results into --> " ' + str(save_dir)+' "', flush=True)
+            
+            with open(os.path.join(save_dir,'X_report.txt'), 'a') as the_file: 
+                the_file.write('================== PREDICTION FROM MSEED ===================='+'\n')               
+                the_file.write('================== Overal Info =============================='+'\n')               
+                the_file.write('date of report: '+str(datetime.now())+'\n')         
+                the_file.write('input_model: '+str(args['input_model'])+'\n')
+                the_file.write('input_dir: '+str(args['input_dir'])+'\n')  
+                the_file.write('output_dir: '+str(save_dir)+'\n')  
+                the_file.write('================== Prediction Parameters ====================='+'\n')  
+                the_file.write('finished the prediction in:  {} hours and {} minutes and {} seconds \n'.format(hour, minute, round(seconds, 2))) 
+                the_file.write('detected: '+str(len(dd))+' events.'+'\n')                                       
+                the_file.write('loss_types: '+str(args['loss_types'])+'\n')
+                the_file.write('loss_weights: '+str(args['loss_weights'])+'\n')
+                the_file.write('================== Other Parameters =========================='+'\n')            
+                the_file.write('normalization_mode: '+str(args['normalization_mode'])+'\n')
+                the_file.write('overlap: '+str(args['overlap'])+'\n')  
+                the_file.write('batch_size: '+str(args['batch_size'])+'\n')                                 
+                the_file.write('detection_threshold: '+str(args['detection_threshold'])+'\n')            
+                the_file.write('P_threshold: '+str(args['P_threshold'])+'\n')
+                the_file.write('S_threshold: '+str(args['S_threshold'])+'\n')
+                the_file.write('number_of_plots: '+str(args['number_of_plots'])+'\n')                        
+                the_file.write('gpuid: '+str(args['gpuid'])+'\n')
+                the_file.write('gpu_limit: '+str(args['gpu_limit'])+'\n')    
+            """
+        t = t + 86400 # next day 
+    with open('time_tracks_sds.pkl', 'wb') as f:
+        pickle.dump(data_track, f, pickle.HIGHEST_PROTOCOL)
+
+def _sdsmseed2nparry(args, sdsclient,sta,stajson,t1,t2, time_slots, comp_types):
+    """
+        read miniseed files and from a list of string names and returns 3 dictionaries of numpy arrays, meta data, and time slice info
+    """
+    
+    #json_file = open(args['stations_json'])
+    #stations_ = json.load(json_file)
+    
+    #st = obspy.core.Stream()
+    net = stajson['network']
+    chans= stajson['channels'][0][0:2]+'*'
+    st = sdsclient.get_waveforms(net,sta,'*',chans,t1,t2)
+    if len(st) == 0:
+        return 0,[], time_slots, comp_types, []
+    print(sta,":",len(st))
+    st.merge(fill_value=0)
+    try:
+        st.merge(fill_value=0)                     
+    except Exception:
+        st =_resampling(st)
+        st.merge(fill_value=0) 
+    st.detrend('demean')
+        
+    for tr in st:
+        time_slots.append((tr.stats.starttime, tr.stats.endtime))
+               
+    st.filter(type='bandpass', freqmin = 1.0, freqmax = 45, corners=2, zerophase=True)
+    st.taper(max_percentage=0.001, type='cosine', max_length=2) 
+    if len([tr for tr in st if tr.stats.sampling_rate != 100.0]) != 0:
+        try:
+            st.interpolate(100, method="linear")
+        except Exception:
+            st=_resampling(st)            
+                    
+    st.trim(min([tr.stats.starttime for tr in st]), max([tr.stats.endtime for tr in st]), pad=True, fill_value=0)
+
+    start_time = st[0].stats.starttime
+    end_time = st[0].stats.endtime  
+
+    meta = {"start_time":start_time,
+            "end_time": end_time,
+            "trace_name":'{}.{}.{:04d}{:03d}'.format(net,sta,t1.year,t1.julday)
+             } 
+                
+    chanL = [tr.stats.channel[-1] for tr in st]
+    comp_types.append(len(chanL))
+    tim_shift = int(60-(args['overlap']*60))
+    next_slice = start_time+60  
+    
+    data_set={}
+                
+    sl = 0; st_times = []      
+    while next_slice <= end_time:
+        npz_data = np.zeros([6000, 3]) 
+        st_times.append(str(start_time).replace('T', ' ').replace('Z', ''))
+        w = st.slice(start_time, next_slice) 
+        if 'Z' in chanL:
+            npz_data[:,2] = w[chanL.index('Z')].data[:6000]
+        if ('E' in chanL) or ('1' in chanL):    
+            try: 
+                npz_data[:,0] = w[chanL.index('E')].data[:6000]
+            except Exception:
+                npz_data[:,0] = w[chanL.index('1')].data[:6000]
+        if ('N' in chanL) or ('2' in chanL):        
+            try: 
+                npz_data[:,1] = w[chanL.index('N')].data[:6000]
+            except Exception:
+                npz_data[:,1] = w[chanL.index('2')].data[:6000]
+                
+        data_set.update( {str(start_time).replace('T', ' ').replace('Z', '') : npz_data})
+   
+        start_time = start_time+tim_shift
+        next_slice = next_slice+tim_shift 
+        sl += 1
+                         
+    meta["trace_start_time"] = st_times
+    meta["receiver_code"]= sta
+    meta["instrument_type"]= stajson['channels'][0][0:2]
+    meta["network_code"]= stajson['network']
+    meta["receiver_latitude"]= stajson['coords'][0]
+    meta["receiver_longitude"]= stajson['coords'][1]
+    meta["receiver_elevation_m"]= stajson['coords'][2]
+
+        
+    return 1, meta, time_slots, comp_types, data_set
