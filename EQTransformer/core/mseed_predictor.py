@@ -176,9 +176,10 @@ def mseed_predictor(input_dir='downloads_mseeds',
     "output_probabilities": output_probabilities
     }        
         
-    if args['gpuid']:     
+    if args['gpuid']: 
+        print('GPU:',args['gpuid'])    
         os.environ['CUDA_VISIBLE_DEVICES'] = '{}'.format(args['gpuid'])
-        tf.Session(config=tf.ConfigProto(log_device_placement=True))
+        tf.session(config=tf.ConfigProto(log_device_placement=True))
         config = tf.ConfigProto()
         config.gpu_options.allow_growth = True
         config.gpu_options.per_process_gpu_memory_fraction = float(args['gpu_limit']) 
@@ -1534,7 +1535,8 @@ def sds_predictor(tbeg,tend,sds_dir='.',
     "output_probabilities": output_probabilities
     }        
         
-    if args['gpuid']:     
+    if args['gpuid']:
+        print('GPU:',args['gpuid'])
         os.environ['CUDA_VISIBLE_DEVICES'] = '{}'.format(args['gpuid'])
         tf.Session(config=tf.ConfigProto(log_device_placement=True))
         config = tf.ConfigProto()
@@ -1609,7 +1611,7 @@ def sds_predictor(tbeg,tend,sds_dir='.',
             if toGo == 0:
                 continue
 
-            save_dir = os.path.join(out_dir, str(year),stajson['network'],sta) #str(st)+'_outputs')
+            save_dir = os.path.join(out_dir, stajson['network'],sta) #str(st)+'_outputs')
             #if not os.path.isdir(save_dir):
             try:
                 #shutil.rmtree(save_dir)  
@@ -1770,7 +1772,7 @@ def _sdsmseed2nparry(args, sdsclient,sta,stajson,t1,t2, time_slots, comp_types):
 
     meta = {"start_time":start_time,
             "end_time": end_time,
-            "trace_name":'{}.{}.{:04d}{:03d}'.format(net,sta,t1.year,t1.julday)
+            "trace_name":'{:04d}.{:03d}'.format(t1.year,t1.julday)
              } 
                 
     chanL = [tr.stats.channel[-1] for tr in st]

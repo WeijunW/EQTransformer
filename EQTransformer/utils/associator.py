@@ -142,7 +142,120 @@ def run_associator(input_dir,
     
     os.remove("phase_dataset")
 
+def sds_associator(input_dir,
+                   start_time, 
+                   end_time, 
+                   moving_window=15, 
+                   pair_n=3,
+                   output_dir='.',
+                   consider_combination=False):
+    
+    """
+    Weijun.  Not finished, decide to use GaMMA associator   
+    It performs a very simple association based on detection times on multiple stations. It works fine when you have a small and local network of seismic stations. 
 
+    Parameters
+    ----------
+    input_dir: str, default=None
+        Directory name containing hdf5 and csv files-preprocessed data.
+        
+    start_time: str, default=None
+        Start of a time period of interest in 'YYYY-MM-DD hh:mm:ss.f' format.
+        
+    end_time: str, default=None
+        End of a timeperiod of interest in 'YYYY-MM-DD hh:mm:ss.f' format. 
+        
+    moving_window: int, default=15
+        The length of time window used for association in second. 
+        
+    pair_n: int, default=2
+        The minimum number of stations used for the association. 
+        
+    output_dir: str, default='.'
+        Path to the directory to write the output file.
+        
+    consider_combination: bool, default=False
+        If True, it will write down all possible combinations of picked arrival times for each event. This will generate multiple events with the same ID, and you will need to remove those with poor solutions after location. This helps to remove the false positives from the associated event. 
+
+
+    Returns
+    ----------        
+    output_dir/Y2000.phs: Phase information for the associated events in hypoInverse format.     
+
+    output_dir/associations.xml: quakeml output (containing origin and pick objects - using ObsPy functions). QuakeML is useful so that the user can then easily use ObsPy to generate input for other relocator methods (e.g. NonLinLoc). Contributed by Stephen Hicks  
+
+    output_dir/traceNmae_dic.json: A dictionary where the trace name for all the detections associated to an event are listed. This can be used later to access the traces for calculating the cross-correlations during the relocation process. 
+        
+        
+    Warning
+    ----------        
+    Unlike the other modules, this function does not create the ouput directory. So if the given path does not exist will give an error. 
+        
+    """   
+   
+    
+    if os.path.exists("phase_dataset"):
+        os.remove("phase_dataset")
+    conn = sqlite3.connect("phase_dataset")
+    cur = conn.cursor()
+    
+    cur.execute('''
+        CREATE TABLE phase_dataset (traceID TEXT, 
+                                    network TEXT,
+                                    station TEXT,
+                                    instrument_type TEXT,
+                                    stlat NUMERIC, 
+                                    stlon NUMERIC, 
+                                    stelv NUMERIC,                        
+                                    event_start_time DateTime, 
+                                    event_end_time DateTime, 
+                                    detection_prob NUMERIC, 
+                                    detection_unc NUMERIC, 
+                                    p_arrival_time DateTime, 
+                                    p_prob NUMERIC, 
+                                    p_unc NUMERIC, 
+                                    p_snr NUMERIC,
+                                    s_arrival_time DateTime, 
+                                    s_prob NUMERIC, 
+                                    s_unc NUMERIC, 
+                                    s_snr NUMERIC,
+                                    amp NUMERIC
+                                    )''')
+    if platform.system() == 'Windows':
+        station_list = [ev for ev in listdir(input_dir) if ev.split("\\")[-1] != ".DS_Store"];
+    else:
+        station_list = [ev for ev in listdir(input_dir) if ev.split("/")[-1] != ".DS_Store"];
+        
+    station_list = sorted(set(station_list))
+
+    for st in station_list:       
+        print(f'reading {st} ...')
+        if platform.system() == 'Windows':
+            _pick_database_maker(conn, cur, input_dir+"\\"+st+'"\\"X_prediction_results.csv')
+        else:
+            _pick_database_maker(conn, cur, input_dir+"/"+st+'/X_prediction_results.csv')
+
+    #  read the database as dataframe 
+    conn = sqlite3.connect("phase_dataset")
+    tbl = pd.read_sql_query("SELECT * FROM phase_dataset", conn); 
+    #tbl = tbl[tbl.p_prob > 0.3]
+    #tbl = tbl[tbl.s_prob > 0.3]
+
+    tbl['event_start_time'] = tbl['event_start_time'].apply(lambda row : _date_convertor(row)) 
+    tbl['event_end_time'] = tbl['event_end_time'].apply(lambda row : _date_convertor(row)) 
+    tbl['p_arrival_time'] = tbl['p_arrival_time'].apply(lambda row : _date_convertor(row)) 
+    tbl['s_arrival_time'] = tbl['s_arrival_time'].apply(lambda row : _date_convertor(row)) 
+
+    _dbs_associator(start_time,
+                    end_time,
+                    moving_window,
+                    tbl, 
+                    pair_n,
+                    output_dir,
+                    station_list,
+                    consider_combination)
+    
+    os.remove("phase_dataset")
 
 
 
