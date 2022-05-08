@@ -1589,7 +1589,7 @@ def sds_predictor(tbeg,tend,sds_dir='.',
         os.makedirs(out_dir) 
         eqt_logger.info(f"Made output to {out_dir}")
 
-    data_track = dict()
+    
     sdsclent = Client(args['input_dir'])
         
     json_file = open(args['stations_json'])
@@ -1600,18 +1600,28 @@ def sds_predictor(tbeg,tend,sds_dir='.',
     while t < tend:
         t1 = t
         t2 = t + 86460  # more 60 seconds ahead 
-        for sta in stajsons:
+        print('working in date:{}'.format(t1))
+        data_track = dict()
+        for netsta in stajsons:
             year = t.year
             jday = t.julday
-            stajson= stajsons[sta]
+            stajson= stajsons[netsta]
+            if 'station' in stajson:
+                sta=stajson['station']
+            else:
+                sta = netsta
+            
+            save_dir = os.path.join(out_dir, stajson['network'],sta) #str(st)+'_outputs')
+            predict_output =  os.path.join(save_dir,'{:04d}.{:03d}.X_prediction_results.csv'.format(year,jday))
+            if os.path.isfile(predict_output) and not overwrite and os.path.getsize(predict_output) > 2014:
+                continue 
 
-            start_Predicting = time.time()       
+            start_Predicting = time.time()    
             time_slots, comp_types = [], []
             toGo,meta, time_slots, comp_types, data_set = _sdsmseed2nparry(args, sdsclent,sta,stajson,t1,t2, time_slots, comp_types)
             if toGo == 0:
                 continue
 
-            save_dir = os.path.join(out_dir, stajson['network'],sta) #str(st)+'_outputs')
             #if not os.path.isdir(save_dir):
             try:
                 #shutil.rmtree(save_dir)  
@@ -1630,8 +1640,22 @@ def sds_predictor(tbeg,tend,sds_dir='.',
                     HDF_PROB = h5py.File(out_probs, 'a')
             except Exception:
                 eqt_logger.error('Make output directories or file error!')
-            plt_n = 0            
-            csvPr_gen = open(os.path.join(save_dir,'{:04d}.{:03d}.X_prediction_results.csv'.format(year,jday)), 'w')          
+            plt_n = 0
+
+            nslice = len(data_set)
+            if args['batch_size'] > nslice:
+                params_pred = {'batch_size': nslice,
+                        'norm_mode': args['normalization_mode']}  
+            else:
+                params_pred = {'batch_size': args['batch_size'],
+                        'norm_mode': args['normalization_mode']}  
+                
+            pred_generator = PreLoadGeneratorTest(meta["trace_start_time"], data_set, **params_pred)
+
+            predD, predP, predS = model.predict_generator(pred_generator)
+
+            csvPr_gen = open(predict_output, 'w')
+                      
             predict_writer = csv.writer(csvPr_gen, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
             predict_writer.writerow(['file_name', 
                                     'network',
@@ -1655,13 +1679,6 @@ def sds_predictor(tbeg,tend,sds_dir='.',
                                         ])  
             csvPr_gen.flush()
             #eqt_logger.info(f"Started working on {st}, {ct+1} out of {len(station_list)} ...")       
-
-            params_pred = {'batch_size': args['batch_size'],
-                        'norm_mode': args['normalization_mode']}  
-                
-            pred_generator = PreLoadGeneratorTest(meta["trace_start_time"], data_set, **params_pred)
-
-            predD, predP, predS = model.predict_generator(pred_generator)
 
             detection_memory = []
             for ix in range(len(predD)):
@@ -1728,8 +1745,8 @@ def sds_predictor(tbeg,tend,sds_dir='.',
                 the_file.write('gpu_limit: '+str(args['gpu_limit'])+'\n')    
             """
         t = t + 86400 # next day 
-    with open('time_tracks_sds.pkl', 'wb') as f:
-        pickle.dump(data_track, f, pickle.HIGHEST_PROTOCOL)
+        with open('{}.{}.time_tracks_sds.pkl'.format(t1.year,t1.julday), 'wb') as f:
+            pickle.dump(data_track, f, pickle.HIGHEST_PROTOCOL)
 
 def _sdsmseed2nparry(args, sdsclient,sta,stajson,t1,t2, time_slots, comp_types):
     """
@@ -1747,6 +1764,8 @@ def _sdsmseed2nparry(args, sdsclient,sta,stajson,t1,t2, time_slots, comp_types):
         return 0,[], time_slots, comp_types, []
     print(sta,":",len(st))
     st.merge(fill_value=0)
+    if len(st[0].data)<12000: # too short data
+        return 0,[], time_slots, comp_types, []
     try:
         st.merge(fill_value=0)                     
     except Exception:
